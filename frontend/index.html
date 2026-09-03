@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#f5f5f7" />
+  <title>升降调 · Music Key Changer</title>
+  <meta name="description" content="免费、在线、专业的音乐升降调工具。上传音频，拖动滑块调整 -12 ~ +12 半音，即时试听并下载。" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+
+  <header class="global-nav" id="globalNav">
+    <div class="nav-inner">
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">升降调</span>
+      </a>
+      <nav class="nav-links" aria-label="主导航">
+        <a href="#tool">开始</a>
+        <a href="#how">使用说明</a>
+        <a href="#faq">常见问题</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero" data-reveal>
+      <h1 class="hero-title">
+        一键升降调。<br /><span class="grad-text">音色，随你掌控。</span>
+      </h1>
+      <p class="hero-sub">
+        上传你的音频，拖动滑块即可在 <strong>-12 ~ +12</strong> 半音间自由升降调。<br />
+        全程在浏览器中完成，隐私安全，即时试听。
+      </p>
+      <a class="hero-cta" href="#tool">立即开始</a>
+    </section>
+
+    <section class="tool" id="tool">
+      <div class="tool-card glass" data-reveal>
+        <div class="step" id="stepUpload">
+          <div class="step-head">
+            <span class="step-num">1</span>
+            <div>
+              <h2 class="step-title">上传音频</h2>
+              <p class="step-desc">支持 MP3 · WAV · FLAC · AAC · OGG，最大 50MB</p>
+            </div>
+          </div>
+          <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="点击或拖拽上传音频文件">
+            <input type="file" id="fileInput"
+              accept=".mp3,.wav,.flac,.aac,.ogg,audio/mp3,audio/mpeg,audio/wav,audio/x-wav,audio/flac,audio/aac,audio/ogg,audio/mp4" hidden />
+            <div class="dropzone-inner">
+              <div class="dropzone-icon" aria-hidden="true"></div>
+              <p class="dropzone-main">拖拽音频到此处，或 <em>点击选择</em></p>
+              <p class="dropzone-hint">文件将在浏览器本地处理，不会上传到服务器</p>
+            </div>
+          </div>
+          <div class="file-info" id="fileInfo" hidden>
+            <div class="file-thumb" aria-hidden="true"></div>
+            <div class="file-meta">
+              <p class="file-name" id="fileName">—</p>
+              <p class="file-detail" id="fileDetail">—</p>
+            </div>
+            <button class="file-remove" id="fileRemove" type="button" aria-label="移除文件">✕</button>
+          </div>
+        </div>
+
+        <div class="step" id="stepAdjust">
+          <div class="step-head">
+            <span class="step-num">2</span>
+            <div>
+              <h2 class="step-title">选择升降调</h2>
+              <p class="step-desc">半音越小越精细，-12 ~ +12 覆盖全部调性</p>
+            </div>
+          </div>
+          <div class="pitch-display">
+            <div class="pitch-current">
+              <span class="pitch-value" id="pitchValue">0</span>
+              <span class="pitch-unit">半音</span>
+            </div>
+            <div class="pitch-label-row">
+              <span class="pitch-dir" id="pitchDir">原调</span>
+              <span class="pitch-key" id="pitchKey">C 大调</span>
+            </div>
+          </div>
+          <div class="slider-wrap">
+            <span class="slider-label slider-label--min">降 12</span>
+            <input type="range" id="semRange" min="-12" max="12" step="1" value="0" disabled aria-label="升降调半音数" />
+            <span class="slider-label slider-label--max">升 12</span>
+          </div>
+          <div class="presets">
+            <p class="presets-label">常用预设</p>
+            <div class="preset-chips" id="presetChips">
+              <button class="chip is-active" data-val="0">原调</button>
+              <button class="chip" data-val="-2">人声降低 2</button>
+              <button class="chip" data-val="+2">人声升高 2</button>
+              <button class="chip" data-val="-1">降 1 调</button>
+              <button class="chip" data-val="+1">升 1 调</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="step" id="stepProcess">
+          <div class="step-head">
+            <span class="step-num">3</span>
+            <div>
+              <h2 class="step-title">处理并试听</h2>
+              <p class="step-desc">点击处理后即可在线试听结果</p>
+            </div>
+          </div>
+          <div class="progress-wrap" id="progressWrap" hidden>
+            <div class="progress-track">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <p class="progress-text" id="progressText">准备中…</p>
+          </div>
+          <div class="waveform" id="waveform">
+            <canvas id="waveCanvas"></canvas>
+            <div class="waveform-placeholder" id="wavePlaceholder">
+              <div class="wave-bars" aria-hidden="true"></div>
+              <p>上传并处理后显示波形</p>
+            </div>
+          </div>
+          <div class="transport" id="transport" hidden>
+            <button class="play-btn" id="playBtn" type="button" aria-label="播放/暂停">
+              <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+            </button>
+            <div class="time-row">
+              <span class="time" id="curTime">0:00</span>
+              <input type="range" id="seek" min="0" max="1000" value="0" disabled aria-label="进度" />
+              <span class="time" id="durTime">0:00</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary btn-block" id="processBtn" disabled>
+              <span class="btn-label">处理</span>
+              <span class="btn-spinner" hidden></span>
+            </button>
+            <a class="btn btn-ghost btn-block" id="downloadBtn" hidden href="#" download="pitchshifted-audio.wav">
+              <svg viewBox="0 0 24 24" aria-hidden="true" class="btn-icon"><path d="M12 3v10.6l4.3-4.3 1.4 1.4L12 16l-5.7-5.3 1.4-1.4L12 13.6V3h0z"/><path d="M5 19h14v2H5z"/></svg>
+              <span class="btn-label">下载结果</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="how" id="how">
+      <h2 class="section-title" data-reveal>简单三步</h2>
+      <div class="how-grid">
+        <article class="feature-card glass" data-reveal>
+          <div class="feature-ico" aria-hidden="true">1</div>
+          <h3>上传音频</h3>
+          <p>拖拽或点击上传 MP3、WAV、FLAC 等常见格式，文件仅在本地处理。</p>
+        </article>
+        <article class="feature-card glass" data-reveal>
+          <div class="feature-ico" aria-hidden="true">2</div>
+          <h3>调整调性</h3>
+          <p>用滑块或预设选择升降调半音数，实时预览音高变化。</p>
+        </article>
+        <article class="feature-card glass" data-reveal>
+          <div class="feature-ico" aria-hidden="true">3</div>
+          <h3>试听下载</h3>
+          <p>即时播放处理结果，满意后一键保存到你喜欢的地方。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="faq" id="faq">
+      <h2 class="section-title" data-reveal>常见问题</h2>
+      <div class="faq-list" data-reveal>
+        <details class="faq-item">
+          <summary>处理会在服务器上运行吗？安全吗？</summary>
+          <p>不会。所有处理都在你的浏览器中本地完成，音频文件不会上传到任何服务器，处理完成后也不会留下任何文件。</p>
+        </details>
+        <details class="faq-item">
+          <summary>支持哪些音频格式？</summary>
+          <p>主流浏览器支持的格式均可，包括 MP3、WAV、FLAC、AAC、OGG 等。建议文件小于 50MB、时长 10 分钟内，体验最佳。</p>
+        </details>
+        <details class="faq-item">
+          <summary>“升调”和“降调”会影响速度吗？</summary>
+          <p>不会。工具采用相位声码器算法，只改变音高（Pitch），保持原有 tempo 与时长不变。</p>
+        </details>
+        <details class="faq-item">
+          <summary>可以批量处理多首歌曲吗？</summary>
+          <p>当前版本支持单文件处理。批量处理功能正在开发中，敬请期待。</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>本工具仅供个人学习与研究使用，请勿上传侵权内容。</p>
+    <p class="ft-small">Music Key Changer · Apple 风格界面</p>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>

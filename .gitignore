@@ -1,0 +1,42 @@
+backend/.venv/
+backend/user_data/
+user_data/
+__pycache__/
+*.pyc
+node_modules/
+
+# Python
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Playwright 测试 venv + 浏览器缓存
+.testenv/
+.playwright/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+
+# 各 AI 助手配置目录
+.claude/
+.claude*/
+agents/
+.qoder/
+.trae/
+.lingma/
+.continue/
+
+# 环境变量
+.env
+.env.*
+.env.claude
+
+# 系统文件
+.DS_Store
+
+# Claude Code agent 技能与工具（非项目代码，是从 modelscope.cn 下载的缓存）
+.agents/
+skills-lock.json
+start_claude.sh
