@@ -32,6 +32,21 @@ class ErrorCode:
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 
+class ProcessingConfig:
+    """Controls the pitch-shift pipeline.
+
+    When ``USE_SEPARATION`` is on, the input is split into vocals / accompaniment
+    with Demucs, each track is pitch-shifted independently (this preserves vocal
+    clarity that is otherwise lost when pitch-shifting the whole mix at once), then
+    re-mixed. If separation fails (e.g. model not downloaded) the pipeline falls
+    back to a direct global pitch shift.
+    """
+
+    USE_SEPARATION = True
+    SEPARATION_MODEL = "mdx_q"          # 2-stem (vocals / accompaniment), ~500MB
+    HF_ENDPOINT = "https://hf-mirror.com"  # mirror used when huggingface.co is blocked
+
+
 class Paths:
     """Session-isolated storage root under <project>/user_data."""
 

@@ -6,5 +6,11 @@ resampy>=0.2.2
 soundfile>=0.12
 numpy>=1.24
 
+# Source separation (Demucs) for vocal-preserving pitch shift — added 2026-09-04.
+# demucs pulls in torch; diffq is required to dequantize the mdx_q model.
+demucs>=4.1.0
+diffq>=0.2.4
+torch>=2.1
+
 # dev / tests
 pytest>=8.0

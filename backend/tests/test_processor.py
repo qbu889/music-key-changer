@@ -69,3 +69,49 @@ def test_process_returns_decodable_wav():
     decoded, sample_rate = sf.read(io.BytesIO(result["bytes"]))
     assert sample_rate == sr
     assert len(decoded) > 0
+
+
+def _tone(sr=22050, seconds=1.0, freq=330.0):
+    return (0.5 * np.sin(2 * np.pi * freq * np.linspace(0, seconds, int(sr * seconds), endpoint=False))).astype(np.float32)
+
+
+def test_pitch_shift_separated_disabled_matches_direct(monkeypatch):
+    """With separation off, the separated path is identical to direct pitch shift."""
+    from audio.config import ProcessingConfig
+
+    sr = 22050
+    audio = _tone(sr=sr)
+    monkeypatch.setattr(ProcessingConfig, "USE_SEPARATION", False)
+    direct = P.pitch_shift(audio, sr, 4)
+    assert np.array_equal(P.pitch_shift_separated(audio, sr, 4), direct)
+
+
+def test_pitch_shift_separated_falls_back_on_error(monkeypatch):
+    """If separation raises, fall back to direct pitch shift (same result, right length)."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(P, "get_separator", boom)
+    sr = 22050
+    audio = _tone(sr=sr)
+    direct = P.pitch_shift(audio, sr, 4)
+    out = P.pitch_shift_separated(audio, sr, 4)
+    assert len(out) == len(audio)
+    assert np.array_equal(out, direct)
+
+
+def test_pitch_shift_separated_end_to_end():
+    """Full separation + independent pitch-shift pipeline (skips if model can't load)."""
+    try:
+        from audio.separators import get_separator
+        get_separator(P.ProcessingConfig.SEPARATION_MODEL)
+    except Exception as exc:  # noqa: BLE001 - network/model unavailable is a skip
+        import pytest
+        pytest.skip(f"demucs model unavailable: {exc}")
+
+    sr = 44100
+    audio = _tone(sr=sr, seconds=1.5, freq=440.0)
+    out = P.pitch_shift_separated(audio, sr, 5)
+    assert out.shape == audio.shape       # channel layout preserved
+    assert len(out) == len(audio)         # length preserved
+    assert not np.allclose(out, audio)    # pitch actually changed

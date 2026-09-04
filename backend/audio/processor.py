@@ -5,11 +5,16 @@ import io
 from dataclasses import dataclass
 from pathlib import Path
 
+import logging
+
 import librosa
 import numpy as np
 import soundfile as sf
 
-from .config import FileConfig, ErrorCode
+from .config import FileConfig, ErrorCode, ProcessingConfig
+from .separators import MODEL_SR, get_separator
+
+logger = logging.getLogger(__name__)
 
 
 class AudioError(Exception):
@@ -90,9 +95,67 @@ def save_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+def _match_length(out: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Trim or zero-pad ``out`` along the last axis to match ``reference`` length."""
+    n = reference.shape[-1]
+    cur = out.shape[-1]
+    if cur == n:
+        return out
+    if cur > n:
+        return out[..., :n] if out.ndim > 1 else out[:n]
+    pad = np.zeros((*out.shape[:-1], n - cur), dtype=out.dtype)
+    return np.concatenate([out, pad], axis=-1)
+
+
+def _match_level(out: np.ndarray, reference: np.ndarray, target: float = 0.98) -> np.ndarray:
+    """Scale ``out`` so its peak matches ``reference``'s peak (capped at ``target``).
+
+    Recombining separated stems can push the summed peak above 1.0 and clip on
+    16-bit PCM encoding. Matching the original's peak keeps the processed track
+    at the same perceived volume while preventing clipping.
+    """
+    dest = min(target, float(np.max(np.abs(reference))))
+    out_peak = float(np.max(np.abs(out)))
+    if out_peak > 1e-6:
+        out = out * (dest / out_peak)
+    return out
+
+
+def pitch_shift_separated(audio: np.ndarray, sample_rate: int, semitones: int) -> np.ndarray:
+    """Pitch-shift while preserving vocal quality by separating first.
+
+    Splits the signal into vocals / accompaniment with Demucs, pitch-shifts each
+    track independently (this keeps vocal harmonics/formants clean — the problem
+    when pitch-shifting the whole mix at once), then re-mixes and resamples back
+    to the input sample rate. Falls back to a direct global pitch shift on any
+    error (e.g. model not downloaded).
+    """
+    if semitones == 0:
+        return audio
+    if not ProcessingConfig.USE_SEPARATION:
+        return pitch_shift(audio, sample_rate, semitones)
+
+    try:
+        separator = get_separator(ProcessingConfig.SEPARATION_MODEL)
+        vocals, accompaniment = separator.separate(audio, sample_rate)
+        v = librosa.effects.pitch_shift(
+            vocals, sr=MODEL_SR, n_steps=semitones, res_type="kaiser_best"
+        )
+        a = librosa.effects.pitch_shift(
+            accompaniment, sr=MODEL_SR, n_steps=semitones, res_type="kaiser_best"
+        )
+        mixed = v + accompaniment
+        out = librosa.core.resample(mixed, orig_sr=MODEL_SR, target_sr=sample_rate)
+        out = _match_level(out, audio)
+        return _match_length(out, audio)
+    except Exception as exc:  # noqa: BLE001 - separation is best-effort
+        logger.warning("separation failed (%s); using direct pitch shift", exc)
+        return pitch_shift(audio, sample_rate, semitones)
+
+
 def process(filename: str, data: bytes, semitones: int) -> dict:
     """Validate, pitch-shift and encode. Returns info + raw WAV bytes."""
     info = validate(filename, data)
     audio, sr = librosa.load(io.BytesIO(data), sr=None)
-    processed = pitch_shift(audio, sr, semitones)
+    processed = pitch_shift_separated(audio, sr, semitones)
     return {"info": info, "bytes": save_wav(processed, sr)}

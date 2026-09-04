@@ -1,7 +1,7 @@
 # 项目记忆 · Music Key Changer（音乐升降调）
 
 > 本文件记录项目现状、技术要点与每日工作轨迹，便于后续快速接手。
-> 最后更新：2026-09-03
+> 最后更新：2026-09-04
 
 ---
 
@@ -20,7 +20,7 @@
 
 | 层 | 选型 |
 |----|------|
-| 后端 | FastAPI（async / uvicorn）+ librosa（核心 `pitch_shift`，`kaiser_best`）+ soundfile（WAV `PCM_16` 编码）+ numpy |
+| 后端 | FastAPI（async / uvicorn）+ librosa（核心 `pitch_shift`，`kaiser_best`）+ demucs+diffq（声部分离，模型 `mdx_q`）+ soundfile（WAV `PCM_16` 编码）+ numpy + torch |
 | 前端 | 原生 HTML/CSS/JS（无框架、无构建）；自实现 Canvas 波形 + Web Audio API transport；离线兜底为自写 FFT（radix-2 Cooley-Tukey）+ 相位声码器 |
 | 测试 | pytest（`backend/tests/`）；前端用 Playwright（`.testenv/`，`~/.cache/ms-playwright` 已装 Chromium） |
 
@@ -35,8 +35,9 @@ music-key-changer/
 ├── backend/
 │   ├── main.py              # FastAPI 入口/路由/会话中间件/静态托管/后台清理线程
 │   ├── audio/
-│   │   ├── config.py        # 格式/大小/时长限制、路径、错误码、FRONTEND_DIR
-│   │   └── processor.py     # 校验 + Librosa pitch_shift + WAV 编码（与 FastAPI 解耦）
+│   │   ├── config.py        # 格式/大小/时长限制、路径、错误码、FRONTEND_DIR、ProcessingConfig
+│   │   ├── processor.py     # 校验 + pitch_shift_separated(分离+Librosa)+ WAV 编码（与 FastAPI 解耦）
+│   │   └── separators.py    # Demucs 声部分离（mdx_q）；懒加载+缓存；HF→hf-mirror 镜像；MPS/CPU 自动切换
 │   ├── tests/               # test_processor.py（音频单测）+ test_api.py（端到端）
 │   ├── conftest.py          # 让 `import audio` / `import main` 可用
 │   ├── requirements.txt
@@ -62,9 +63,9 @@ music-key-changer/
 
 ---
 
-## 5. 今日工作（2026-09-03）
+## 5. 今日工作日志
 
-### 5.1 完成
+### 5.1 今日工作（2026-09-03）
 - ✅ **时长限制放宽**：300s → 600s（10 分钟）。改动点：
   - `backend/audio/config.py`：`MAX_DURATION = 600`
   - `frontend/app.js`：`MAX_DURATION = 600` + 超限提示文案改为"10 分钟"
@@ -72,7 +73,26 @@ music-key-changer/
 - ✅ **清理前端诊断代码**：移除 `app.js` 中调试用的 `console.log`（playFrom/tick 内）与 `window.__mkcState` 钩子，代码恢复干净。
 - ✅ **测试**：`pytest` 13 passed（音频单测 + API 端到端）。
 
-### 5.2 已解决的问题
+### 5.2 今日工作（2026-09-04）
+- ✅ **升降调改走"声部分离式"处理，显著改善人声质感**。
+  - **背景/根因**：原实现把整首混音（人声+伴奏混在一起）直接做 `librosa.pitch_shift`（相位声码器+WSOLA）。算法本身没问题（`kaiser_best`、保留共振峰），但人声与伴奏频谱纠缠在一起拉伸时产生频谱弥散/幅度抖动，在人声谐波上最明显 → 人声质感变差。
+  - **方案**（专业降调 App 的做法）：先分离 → 分别升降调 → 再混回。输出仍"人声+伴奏"，但人声清晰度回升。
+  - **实现**：
+    - 新文件 `backend/audio/separators.py`：`SourceSeparator` 包装 Demucs `mdx_q`（2 音轨→实际输出 4 音轨 `drums/bass/other/vocals`），`get_separator()` 懒加载 + `lru_cache`。
+    - `processor.py::pitch_shift_separated`：分离出人声/伴奏 → 各做保留共振峰的 `pitch_shift` → 混回 + 采样率还原 → `_match_level` 电平均衡(峰值对齐原曲、封顶 0.98 防 PCM 削波) → `_match_length` 对齐长度。**任一异常自动回退到整体直接升降调**（`except Exception` → `pitch_shift`）。
+    - `config.py::ProcessingConfig`：`USE_SEPARATION=True`（默认开）、`SEPARATION_MODEL="mdx_q"`，可开关/换模型。
+    - 依赖：`requirements.txt` 新增 `demucs>=4.1.0`、`diffq>=0.2.4`、`torch>=2.1`（diffq 是 mdx_q 量化模型必需）。
+  - **排过的坑**（环境/API）：
+    1. Demucs 4.x 权重走 `torch.hub` 从 HuggingFace 拉 safetensors，**torch.hub 忽略 `HF_ENDPOINT` 镜像变量**；HF 被墙时权重下不下来。→ `separators.py` 里**提前把 `huggingface.co`/`hf.co` URL 改写为 `hf-mirror.com`**（`DEMUCS_HF_MIRROR=0` 可关）。
+    2. `mdx_q` 是 DiffQ 量化模型，**必须装 `diffq`**，否则加载失败。
+    3. `apply_model(model, x)` 返回 **4D `(batch=1, sources, channels, samples)`** → 需 `[0]` 去掉 batch 维再按音轨索引。
+    4. Demucs 模型**输入必须是立体声(2 通道)**：`_to_tensor` 把 mono 上混为立体声喂模型，分离后再按输入声道数下混（`mono_in` 判断），保持输入输出声道一致。
+    5. 分离路径输出声道 = 输入声道（librosa pitch_shift 保持），`_match_length` 处理两次采样率变换带来的 ± 长度偏差。
+    6. **混回后峰值超 1.0 会削波**：真曲（橄榄树 273s）实测分离式 `peak=1.216`（直接式为 1.116，已削波）。→ 新增 `_match_level`：把输出峰值对齐到原曲峰值、封顶 0.98，既防 PCM 削波又保持感知音量（rms 与原曲一致）。实测修复后 `peak=0.980`、0 clip。
+  - **验证**：`process()` 端到端（立体声文件输入 → librosa mono → 分离 → 升降调 → WAV）输出正确 mono WAV；`pytest` **16 passed**（新增 3 个测试：分离关闭=直接升降调、注入失败回退、模型端到端 1.5s 音频校验 shape/length/实际改变）。
+- ⚠️ **已知遗留（未影响功能）**：`save_wav` 对**立体声**数组用 `sf.write` 写空 BytesIO 会报 "Format not recognised"（soundfile/libsndfile 对 librosa↔soundfile 声道约定+空 buffer 检格式的坑）。当前 `process()` 因 `librosa.load(mono=True)` 恒输出 mono，**不受影响**；若将来启用立体声输出需修复 `save_wav`。
+
+### 5.3 已解决的问题（2026-09-03）
 - ✅ **进度条/seek 与实际不符（已修复）**：用户反馈"处理后歌曲进度条一下子就全部跑完"。
   - 现象：播放后 `state.offset` 迅速到达 `buffer.duration`、seek 瞬间到 1000，但音频实际时长正确（后端 WAV 经 soundfile 确认为 48000 Hz / 20s，buffer 解码也正确）。
   - **真正根因（非 audioCtx.currentTime）**：`tick()` 每帧执行 `state.offset = state.offset + (时钟 - startTime)`，而 `startTime` 固定为播放起点，于是每帧都把"总流逝时间"重复加到已累积的 offset 上 → **二次增长（复利）**，按抛物线暴涨，瞬间跑满。

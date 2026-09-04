@@ -10,14 +10,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status / 项目状态
 
-**Last updated: 2026-09-03**
+**Last updated: 2026-09-04**
 
 This repository is in a **working MVP state**. The core product is implemented and tested:
-本仓库已处于**可用的 MVP 状态**，核心功能已实现并通过测试（`pytest` 13 passed）。
+本仓库已处于**可用的 MVP 状态**，核心功能已实现并通过测试（`pytest` 16 passed）。
 
-- ✅ 完整实现见 `backend/`（FastAPI + Librosa）与 `frontend/`（原生 HTML/CSS/JS）。
+- ✅ 完整实现见 `backend/`（FastAPI + Librosa + Demucs）与 `frontend/`（原生 HTML/CSS/JS）。
 - ✅ 核心流程：上传 → 选音 → 处理 → 试听 → 下载，端到端可用。
-- ✅ 双引擎：有后端走 Librosa；`file://` 离线自动回退到浏览器内相位声码器。
+- ✅ **升降调默认先做声部分离（人声/伴奏），分别处理后混回**，显著改善人声质感（见下方 `Actual Stack`）。
+- ✅ 双引擎：有后端走 Librosa/Demucs；`file://` 离线自动回退到浏览器内相位声码器。
 - ⬜ `docs/requirements.md` 中列出的 **P1/P2 高级功能尚未实现**（见下方 `Unfinished`）。
 - ⬜ `docs/api.md` 尚未创建（需求 §8.2 引用了它）。
 
@@ -34,8 +35,10 @@ This repository is in a **working MVP state**. The core product is implemented a
 
 ## Actual Stack (implemented) / 实际技术栈
 
-- **Backend / 后端:** FastAPI (async, uvicorn) + `librosa`（核心 `pitch_shift`，`kaiser_best`）+ `soundfile`（WAV 编码 `PCM_16`）+ numpy。会话隔离存储于 `user_data/<session_id>/`，后台线程每小时清理 24h 过期文件。
-  FastAPI（异步）+ librosa（升降调）+ soundfile（WAV 编码）+ numpy；会话隔离 + 定时清理。
+- **Backend / 后端:** FastAPI (async, uvicorn) + `librosa`（核心 `pitch_shift`，`kaiser_best`）+ `demucs`+`diffq`（声部分离，模型 `mdx_q`）+ `soundfile`（WAV 编码 `PCM_16`）+ numpy + `torch`。会话隔离存储于 `user_data/<session_id>/`，后台线程每小时清理 24h 过期文件。
+  FastAPI（异步）+ librosa（升降调）+ Demucs/diffq（声部分离）+ soundfile（WAV 编码）+ torch + numpy；会话隔离 + 定时清理。
+
+  **升降调管线（`audio/processor.py::pitch_shift_separated`）**：先由 `audio/separators.py` 用 Demucs 把音频拆成人声/伴奏 → 分别做保留共振峰的 `librosa.pitch_shift` → 混回并采样率还原到输入。任一环节出错（如模型未下载/网络故障）**自动回退到整体直接升降调**，保证功能可用。`audio/config.py::ProcessingConfig` 可开关（`USE_SEPARATION`）与换模型（`SEPARATION_MODEL`）。
 - **Frontend / 前端:** 原生 HTML/CSS/JS（无框架、无构建）。自定义 Canvas 波形 + Web Audio API transport（播放/暂停/拖动）。**未用** Tailwind / Wavesurfer.js（需求里写的是 Wavesurfer，实际用自实现 Canvas）。离线兜底为自写 FFT（radix-2 Cooley-Tukey）+ 相位声码器。
   Vanilla HTML/CSS/JS（无框架）；自实现 Canvas 波形 + Web Audio；离线自写 FFT 相位声码器。
 - **Tests / 测试:** pytest，位于 `backend/tests/`（`test_processor.py` 音频单测 + `test_api.py` 端到端）。
@@ -62,7 +65,7 @@ This repository is in a **working MVP state**. The core product is implemented a
 **P2（锦上添花）：**
 3. **批量处理** — 无 `/api/v1/batch-process`，前端仅单文件。
 4. **历史记录** — 仅有内存 process_count 计数，无持久化。
-5. **音质增强 / 和声生成 / AI 推荐调性 / 社交分享 / API 开放** — 需求 P2/P3。
+5. **音质增强** — ✅ **声部分离式升降调已实现**（`pitch_shift_separated`，Demucs `mdx_q`，默认开启，失败自动回退）。**和声生成 / AI 推荐调性 / 社交分享 / API 开放** — 仍为需求 P2/P3。
 
 **非功能 / 合规：**
 6. **限流（SlowAPI）与配额管理** — 需求 §4 建议 10次/小时、每日上传/处理上限。
@@ -80,8 +83,9 @@ This repository is in a **working MVP state**. The core product is implemented a
 backend/
 ├── main.py                 # FastAPI 入口/路由/会话中间件/静态托管/后台清理
 ├── audio/
-│   ├── config.py           # 格式/大小/时长限制、路径、错误码、FRONTEND_DIR
-│   └── processor.py        # 校验 + Librosa pitch_shift + WAV 编码（与 FastAPI 解耦）
+│   ├── config.py           # 格式/大小/时长限制、路径、错误码、FRONTEND_DIR、ProcessingConfig
+│   ├── processor.py        # 校验 + pitch_shift_separated(分离+Librosa)+ WAV 编码（与 FastAPI 解耦）
+│   └── separators.py       # Demucs 声部分离（mdx_q）；懒加载 + 缓存；HF→hf-mirror 镜像路由；MPS/CPU 自动切换
 ├── tests/                  # test_processor.py（单测）+ test_api.py（端到端）
 ├── conftest.py
 ├── requirements.txt
@@ -98,6 +102,7 @@ docs/requirements.md        # 完整需求设计文档（编码前必读）
 ## Common Commands / 常用命令
 
 - Install deps / 安装依赖: `cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+  - ⚠️ 首次运行升降调会**下载 Demucs `mdx_q` 模型**（约 500MB，缓存到 `~/.cache/huggingface`）。若 HuggingFace 不可达（如国内网络），`separators.py` 会自动把权重下载路由到 `hf-mirror.com`；如需手动禁用镜像设环境变量 `DEMUCS_HF_MIRROR=0`。已安装 `diffq`（mdx_q 为量化模型，必需）。
 - Run app / 启动应用: `cd backend && .venv/bin/python -m uvicorn main:app --reload`（或 `./run.sh`），前端在 http://localhost:8000/
 - Run tests / 运行测试: `cd backend && .venv/bin/python -m pytest -q`
 - Run a single test / 运行单个测试: `cd backend && .venv/bin/python -m pytest tests/test_file.py::test_name`
