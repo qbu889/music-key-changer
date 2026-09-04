@@ -144,7 +144,9 @@ def pitch_shift_separated(audio: np.ndarray, sample_rate: int, semitones: int) -
         a = librosa.effects.pitch_shift(
             accompaniment, sr=MODEL_SR, n_steps=semitones, res_type="kaiser_best"
         )
-        mixed = v + accompaniment
+        # Shift BOTH stems so the whole song changes key together and the
+        # vocal stays in relation to the accompaniment (mix the shifted one).
+        mixed = v + a
         out = librosa.core.resample(mixed, orig_sr=MODEL_SR, target_sr=sample_rate)
         out = _match_level(out, audio)
         return _match_length(out, audio)
