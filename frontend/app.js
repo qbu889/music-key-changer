@@ -149,11 +149,13 @@
     state.sourceNode.buffer = buffer;
     state.sourceNode.connect(state.audioCtx.destination);
     state.offset = offset;
-    state.startTime = state.audioCtx.currentTime;
+    // 用可靠的单调墙钟 performance.now() 记录播放起点，避免 audioCtx.currentTime
+    // 在某些浏览器/headless 环境下推进速率不可靠导致进度条漂移。
+    state.startTime = performance.now();
     state.sourceNode.start(0, offset);
     state.sourceNode.onended = () => {
       // natural end
-      if (state.playing && Math.abs(state.audioCtx.currentTime - (state.startTime + buffer.duration)) < 0.3) {
+      if (state.playing && Math.abs((performance.now() - state.startTime) / 1000 - buffer.duration) < 0.3) {
         state.playing = false;
         state.offset = 0;
         state.seekOffset = null;
@@ -169,7 +171,7 @@
 
   function pause() {
     if (!state.playing) return;
-    state.offset += state.audioCtx.currentTime - state.startTime;
+    state.offset += (performance.now() - state.startTime) / 1000;
     stopSource();
     state.playing = false;
     el.playBtn.classList.remove('playing');
@@ -184,14 +186,15 @@
   function tick() {
     if (!state.playing) return;
     const buffer = state.processedBuffer || state.originalBuffer;
-    const pos = state.offset + (state.audioCtx.currentTime - state.startTime);
+    // state.offset 是播放(重)开始时的固定起点；这里只按墙钟流逝计算当前 pos 用于显示。
+    // 绝不能把 pos 写回 state.offset——否则每帧都会把"总流逝时间"重复加到已累积的 offset 上，
+    // 导致进度二次增长(复利)而瞬间跑满。pause() 会一次性把流逝时间累加到 offset。
+    const pos = state.offset + (performance.now() - state.startTime) / 1000;
     if (pos >= buffer.duration) {
-      state.offset = buffer.duration;
       el.seek.value = 1000;
       el.curTime.textContent = fmtTime(buffer.duration);
       return;
     }
-    state.offset = pos;
     el.seek.value = (pos / buffer.duration) * 1000;
     el.curTime.textContent = fmtTime(pos);
     state.rafId = requestAnimationFrame(tick);
