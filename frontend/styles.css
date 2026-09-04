@@ -316,6 +316,8 @@ input[type="range"]:disabled { cursor: default; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- Sections / How / FAQ ---------- */
+/* Push anchor targets below the sticky nav when hash-navigating. */
+#top, #how, #faq, #tool { scroll-margin-top: 72px; }
 .section-title { font-size: clamp(28px, 5vw, 40px); font-weight: 700; letter-spacing: -0.02em; text-align: center; margin-bottom: 32px; }
 .how { max-width: 1000px; margin: 0 auto; padding: 24px; }
 .how-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }

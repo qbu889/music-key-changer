@@ -646,9 +646,20 @@
   onScroll();
 
   // Reveal on scroll
+  const reveal = (el) => el.classList.add('in');
+  const revealInView = () => {
+    const vh = window.innerHeight || 800;
+    document.querySelectorAll('[data-reveal]').forEach((el) => {
+      const rect = el.getBoundingClientRect();
+      // Reveal anything already inside the viewport (minus the sticky nav band)
+      // so hash-navigated anchors (e.g. #how, #faq) show without a scroll.
+      if (rect.top < vh - 40 && rect.bottom > 40) reveal(el);
+    });
+  };
   const io = new IntersectionObserver((entries) => {
-    entries.forEach((en) => { if (en.isIntersecting) en.target.classList.add('in'); io.unobserve(en.target); });
-  }, { threshold: 0.12 });
+    entries.forEach((en) => { if (en.isIntersecting) { reveal(en.target); io.unobserve(en.target); } });
+  }, { threshold: 0.12, rootMargin: '-40px 0px 0px 0px' });
+  revealInView(); // immediate pass: handles direct hash navigation to #how/#faq
   document.querySelectorAll('[data-reveal]').forEach((n) => io.observe(n));
 
   // Keyboard: space toggles play when not typing
