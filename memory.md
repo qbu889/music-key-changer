@@ -72,11 +72,16 @@ music-key-changer/
 - ✅ **清理前端诊断代码**：移除 `app.js` 中调试用的 `console.log`（playFrom/tick 内）与 `window.__mkcState` 钩子，代码恢复干净。
 - ✅ **测试**：`pytest` 13 passed（音频单测 + API 端到端）。
 
-### 5.2 进行中的问题（需跟进）
-- ⚠️ **进度条/seek 与实际不符**：用户反馈"处理后歌曲进度条一下子就全部跑完"。
-  - 现象：播放后 `state.offset` 迅速到达 `buffer.duration`、seek 卡在 1000，但音频实际播放时长正确。
-  - 排查：`tick()` 中 `pos = offset + (audioCtx.currentTime - startTime)` 计算出的 pos 增长远快于真实播放位置（约 10 倍），疑似 `AudioContext.currentTime` 与 buffer 采样率/时长对不上。
-  - 状态：**根因未定**。用页内 console.log 帧级记录时跟踪正常，用 evaluate 采样时复现异常——存在测量方式干扰的可能。需在不加诊断代码、用真实音频文件下稳定复现后定位。
+### 5.2 已解决的问题
+- ✅ **进度条/seek 与实际不符（已修复）**：用户反馈"处理后歌曲进度条一下子就全部跑完"。
+  - 现象：播放后 `state.offset` 迅速到达 `buffer.duration`、seek 瞬间到 1000，但音频实际时长正确（后端 WAV 经 soundfile 确认为 48000 Hz / 20s，buffer 解码也正确）。
+  - **真正根因（非 audioCtx.currentTime）**：`tick()` 每帧执行 `state.offset = state.offset + (时钟 - startTime)`，而 `startTime` 固定为播放起点，于是每帧都把"总流逝时间"重复加到已累积的 offset 上 → **二次增长（复利）**，按抛物线暴涨，瞬间跑满。
+  - 修复（`frontend/app.js`）：
+    - `tick()` 里 `state.offset` 作为播放(重)开始时的**固定起点**，只算 `pos` 用于显示，**不再写回** `state.offset`。
+    - `pause()` 一次性把流逝时间累加到 `state.offset`（每帧只调一次，不受复利影响）。
+    - 播放进度统一改用可靠的单调墙钟 `performance.now()`，避免 `audioCtx.currentTime` 在部分浏览器/headless 环境下推进不可靠。
+  - 验证：后端路径与本地相位声码器路径均用 20s 音频测得 seek 按 1.0x 线性（1s=50、3s=150、5s=250）；pause 保持、resume 从断点继续、跳段、下载均正常；`pytest` 13 passed。
+  - 提交：`73a6f1f`（已 push 到 origin/master）。
 
 ---
 
