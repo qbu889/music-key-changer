@@ -35,14 +35,16 @@ class ErrorCode:
 class ProcessingConfig:
     """Controls the pitch-shift pipeline.
 
-    When ``USE_SEPARATION`` is on, the input is split into vocals / accompaniment
-    with Demucs, each track is pitch-shifted independently (this preserves vocal
-    clarity that is otherwise lost when pitch-shifting the whole mix at once), then
-    re-mixed. If separation fails (e.g. model not downloaded) the pipeline falls
-    back to a direct global pitch shift.
+    ``USE_SEPARATION`` defaults to ``False``: the whole mix is pitch-shifted in one
+    coherent pass, which keeps vocal/accompaniment phase alignment and adds no extra
+    high-frequency hiss. Splitting into stems with Demucs first (``True``) preserves
+    some vocal-band tonality but the spectrogram reconstruction adds noticeable
+    high-frequency "electric" noise and stem re-mixing breaks phase coherence
+    (comb-filtering), so it is offered only as an opt-in. If separation fails
+    (e.g. model not downloaded) the pipeline falls back to a direct global pitch shift.
     """
 
-    USE_SEPARATION = True
+    USE_SEPARATION = False
     SEPARATION_MODEL = "mdx_q"          # 2-stem (vocals / accompaniment), ~500MB
     HF_ENDPOINT = "https://hf-mirror.com"  # mirror used when huggingface.co is blocked
 

@@ -1,6 +1,7 @@
 """Unit tests for audio validation and pitch-shift processing."""
 import io
 
+import librosa
 import numpy as np
 import soundfile as sf
 
@@ -100,8 +101,41 @@ def test_pitch_shift_separated_falls_back_on_error(monkeypatch):
     assert np.array_equal(out, direct)
 
 
-def test_pitch_shift_separated_end_to_end():
+def _high_band_rms(sig: np.ndarray, lo: int = 12000) -> float:
+    """RMS of spectral energy above ``lo`` Hz (a proxy for phase-vocoder aliasing)."""
+    S = np.abs(librosa.stft(sig, n_fft=8192, hop_length=1024))
+    freqs = np.arange(S.shape[0]) * 44100 / 8192
+    return float(np.sqrt(np.mean(np.sum(S[freqs >= lo] ** 2, axis=0))))
+
+
+def test_down_shift_reduces_high_band_aliasing():
+    """A down-shift should suppress the >12 kHz aliasing the phase vocoder adds."""
+    sr = 22050
+    audio = _tone(sr=sr, freq=330.0)
+    out = P.pitch_shift_separated(audio, sr, -6)
+    ref = P.pitch_shift(audio, sr, -6)  # same algorithm, no LPF cleanup
+    assert _high_band_rms(out) < _high_band_rms(ref)
+
+
+def test_up_shift_is_not_filtered():
+    """Up-shifts keep their real high-frequency content: no LPF is applied."""
+    sr = 22050
+    audio = _tone(sr=sr, freq=330.0)
+    out = P.pitch_shift_separated(audio, sr, 6)
+    ref = P.pitch_shift(audio, sr, 6)
+    assert np.array_equal(out, ref)
+
+
+def test_zero_shift_is_identity():
+    sr = 22050
+    audio = _tone(sr=sr, freq=330.0)
+    assert np.array_equal(P.pitch_shift_separated(audio, sr, 0), audio)
+
+
+def test_pitch_shift_separated_end_to_end(monkeypatch):
     """Full separation + independent pitch-shift pipeline (skips if model can't load)."""
+    from audio.config import ProcessingConfig
+    monkeypatch.setattr(ProcessingConfig, "USE_SEPARATION", True)  # exercise the split path
     try:
         from audio.separators import get_separator
         get_separator(P.ProcessingConfig.SEPARATION_MODEL)
