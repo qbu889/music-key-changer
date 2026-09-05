@@ -133,7 +133,16 @@ music-key-changer/
   ```
   `default-src` 允许 `blob:` 以兼容前端 `<a download>` 的 blob 下载链接；`script-src`/`style-src` 保持严格（无需 `'unsafe-inline'`）。另加 `Permissions-Policy` 关闭地理定位/麦克风/摄像头。
 - **验证**：用 Playwright 真实加载页面——外部 app.js 成功加载、标题正常、**0 控制台错误、0 被阻断请求**；`pytest` 29 passed（新增 CSP 断言）。
-- 提交：待提交。
+- 提交：`b87c631` 之后（随本次限流一起 push）。
+
+### 5.7 今日工作（2026-09-05，限流 SlowAPI）
+- ✅ **处理接口限流（SlowAPI，IP 维度）**。需求 §6 非功能项。
+  - **方案**：`/api/v1/process` 加 `@limiter.limit("5/minute;20/hour")`（`get_remote_address` 为 key，`memory://` 存储，适合 MVP 单进程）。超限返回结构化 **429**（`error_code: RATE_LIMIT_EXCEEDED` + 中文提示）+ `Retry-After`；health/download 不受影响（限流对每个路由单独 opt-in）。
+  - **🔴 关键坑（slowapi 0.1.10 兼容 bug）**：`Limiter(headers_enabled=True)` 会让**每个成功请求都崩**。slowapi `async_wrapper` 成功路径在 endpoint 返回 dict 时把 `kwargs.get("response")`（None）传给 `_inject_headers`，触发 `parameter 'response' must be an instance of Response`。→ **`headers_enabled` 保持默认 False**，Retry-After 在自定义 `_rate_limit_handler` 里用 `get_window_stats(item, *keys)[-1]` 手动算（兜底 60s），不依赖 slowapi 的 header injection。
+  - **依赖**：`requirements.txt` 已含 `slowapi>=0.1.10`（2026-09-05 加）。
+  - **测试隔离**：`test_api.py` 新增 autouse fixture `_reset_rate_limit`（`main.limiter.reset()`，因所有请求共享 127.0.0.1）。新增 `test_process_rate_limited`（第 6 次 → 429 + error_code + Retry-After）与 `test_rate_limit_does_not_affect_other_routes`（7 次 health 均 200）。
+- **验证**：`pytest` **31 passed**（原 29 + 限流 2）。成功路径 200、限流 429 均实测通过。
+- 提交：待提交（随安全加固一并 push）。
 
 ---
 

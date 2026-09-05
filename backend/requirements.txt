@@ -1,6 +1,8 @@
 fastapi>=0.111
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
+# rate limiting (SlowAPI) — added 2026-09-05
+slowapi>=0.1.10
 librosa>=0.10
 resampy>=0.2.2
 soundfile>=0.12

@@ -4,6 +4,7 @@ import io
 
 import numpy as np
 import soundfile as sf
+import pytest
 from fastapi.testclient import TestClient
 
 import main
@@ -18,6 +19,13 @@ def _wav_bytes(freq=440.0, seconds=1.0, sr=44100):
 
 
 client = TestClient(main.app)
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    """Each test starts with a clean rate-limit bucket (all requests share 127.0.0.1)."""
+    main.limiter.reset()
+    yield
 
 
 def test_health():
@@ -228,3 +236,31 @@ def test_process_oversized_without_content_length_is_bounded():
         assert r.json()["error_code"] == "FILE_SIZE_EXCEEDED"
     finally:
         main._bounded_read = orig
+
+
+def test_process_rate_limited():
+    """The process endpoint is rate limited (5/minute per IP): the 6th request
+    within a minute gets a friendly 429 with RATE_LIMIT_EXCEEDED + Retry-After."""
+    for _ in range(5):
+        r = client.post(
+            "/api/v1/process",
+            files={"file": ("tone.wav", _wav_bytes(), "audio/wav")},
+            data={"semitones": 1},
+        )
+        assert r.status_code == 200, r.text
+    # 6th request within the same minute window is throttled.
+    r = client.post(
+        "/api/v1/process",
+        files={"file": ("tone.wav", _wav_bytes(), "audio/wav")},
+        data={"semitones": 1},
+    )
+    assert r.status_code == 429
+    assert r.json()["error_code"] == "RATE_LIMIT_EXCEEDED"
+    assert r.headers.get("Retry-After")
+
+
+def test_rate_limit_does_not_affect_other_routes():
+    """Rate limiting is opt-in per route: health/download are not throttled."""
+    for _ in range(7):
+        r = client.get("/api/health")
+        assert r.status_code == 200

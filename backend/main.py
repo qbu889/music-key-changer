@@ -21,6 +21,9 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from audio.config import FileConfig, Paths, ErrorCode, FRONTEND_DIR
 from audio.processor import AudioError, process, validate
@@ -179,6 +182,56 @@ async def set_security_headers(request: Request, call_next):
     return response
 
 
+# --- Rate limiting (SlowAPI) -----------------------------------------------
+# IP-based rate limiting protects the (optionally GPU-heavy, Demucs-backed)
+# processing endpoint from abuse/DoS. In-memory storage suits the MVP
+# single-process deployment. The middleware exposes the limiter to rate-limited
+# routes via ``request.state.limiter``; routes opt in with ``@limiter.limit``.
+# ``headers_enabled`` is intentionally left at its default (False): slowapi
+# 0.1.10's success-path header injection passes ``None`` as the response when
+# the endpoint returns a plain dict, which raises on *every successful*
+# request. We therefore emit Retry-After manually in the 429 handler below
+# (best-effort, never breaks the response).
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri="memory://",
+)
+
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return a friendly, structured 429 with a best-effort Retry-After hint."""
+    response = JSONResponse(
+        status_code=429,
+        content={"status": "error", "error_code": "RATE_LIMIT_EXCEEDED",
+                 "message": "请求过于频繁，请稍后再试"},
+    )
+    # ``request.state.view_rate_limit`` = (RateLimitItem, keys) set by slowapi
+    # before raising. ``get_window_stats`` -> (hits, remaining, reset_ts) gives
+    # the epoch time the hit window resets; Retry-After = seconds from now.
+    view = getattr(request.state, "view_rate_limit", None)
+    if view:
+        item, keys = view
+        try:
+            reset_ts = main.limiter.limiter.get_window_stats(item, *keys)[-1]
+            response.headers["Retry-After"] = str(max(0, int(reset_ts - time.time())))
+        except Exception:  # noqa: BLE001 - Retry-After is a hint, never break the 429
+            response.headers.setdefault("Retry-After", "60")
+    else:
+        response.headers.setdefault("Retry-After", "60")
+    return response
+
+
+app.router.limiter = limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
+
+@app.middleware("http")
+async def limit_requests(request: Request, call_next):
+    request.state.limiter = limiter
+    return await call_next(request)
+
+
 # --- Health ----------------------------------------------------------------
 @app.get("/api/health")
 def health():
@@ -187,6 +240,7 @@ def health():
 
 # --- Upload + process (MVP synchronous) ------------------------------------
 @app.post("/api/v1/process")
+@limiter.limit("5/minute;20/hour")  # IP-based rate limit (SlowAPI)
 async def process_audio(request: Request, file: UploadFile = File(...), semitones: int = Form(0)):
     session_id = request.state.session_id
     _sessions[session_id]["process_count"] += 1
