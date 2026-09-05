@@ -40,3 +40,5 @@ agents/
 .agents/
 skills-lock.json
 start_claude.sh
+
+# 注：self-improving-agent skill 通过 `git add -f` 纳入版本控制，其余缓存仍忽略
