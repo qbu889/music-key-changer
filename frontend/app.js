@@ -442,6 +442,13 @@
     el.progressWrap.hidden = false;
     el.downloadBtn.hidden = true;
     setProgress(0, '准备中…');
+    // 关闭过渡、把条归零后让出当前帧（macrotask），让浏览器真正把 0% 这一帧绘制出来，
+    // 否则紧接着的 setProgress(5) 会在同一帧内覆盖它，进度条就会从上次残留的 100% 直接
+    // 跳到 5%，看不到归零恢复。setTimeout(0) 会跨到下一个宏任务，期间浏览器必会绘制一帧。
+    el.progressBar.style.transition = 'none';
+    el.progressBar.style.width = '0%';
+    await new Promise((r) => setTimeout(r, 0));
+    el.progressBar.style.transition = ''; // 恢复 CSS 中的过渡，后续从 0% 正常动画上升
 
     const backend = await detectBackend();
     setProgress(5, backend ? '服务端处理中…' : '本地引擎处理中…');
@@ -469,6 +476,13 @@
       el.wavePlaceholder.classList.add('hidden');
       el.transport.hidden = false;
       el.seek.disabled = false;
+      // 重新处理后：播放进度条（seek）归零、当前时间重置为 0:00，并复位播放位置状态，
+      // 否则用户之前拖动的 seek 位置 / seekOffset / offset 会被保留，导致进度条停在旧点、
+      // 下次播放也从旧位置而非开头开始。
+      el.seek.value = 0;
+      el.curTime.textContent = '0:00';
+      state.seekOffset = null;
+      state.offset = 0;
       drawWaveform(state.processedBuffer);
       el.durTime.textContent = fmtTime(state.processedBuffer.duration);
       el.downloadBtn.hidden = false;
