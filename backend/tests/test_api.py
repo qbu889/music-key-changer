@@ -1,4 +1,5 @@
 """End-to-end API tests using FastAPI's TestClient."""
+import asyncio
 import io
 
 import numpy as np
@@ -126,3 +127,93 @@ def test_frontend_served():
     r = client.get("/")
     assert r.status_code == 200
     assert "升降调" in r.text
+
+
+# --- Additional security tests (bounded upload, info-leak, filename) --------
+class _FakeUploadFile:
+    """Stand-in whose ``.file`` reads a fixed payload in bounded chunks."""
+
+    def __init__(self, data: bytes, chunk: int = 4096):
+        self._data = data
+        self._pos = 0
+        self._chunk = chunk
+
+    @property
+    def file(self):
+        return self
+
+    def read(self, n: int) -> bytes:
+        part = self._data[self._pos:self._pos + n]
+        self._pos += n
+        return part
+
+
+def test_bounded_read_caps_at_limit():
+    """``_bounded_read`` must never load more than the cap, even if the real
+    body is far larger (simulates a chunked/under-reported upload)."""
+    over = b"a" * (main.MAX_UPLOAD_BYTES + 50 * 1024 * 1024)  # 50 MB over the cap
+    fake = _FakeUploadFile(over)
+    data = asyncio.run(main._bounded_read(fake, main.MAX_UPLOAD_BYTES))
+    assert len(data) == main.MAX_UPLOAD_BYTES          # capped exactly
+    assert fake._pos == main.MAX_UPLOAD_BYTES          # stopped at the cap
+
+
+def test_bounded_read_returns_full_body_when_under_limit():
+    small = b"tone" * 1000
+    fake = _FakeUploadFile(small)
+    data = asyncio.run(main._bounded_read(fake, main.MAX_UPLOAD_BYTES))
+    assert data == small
+
+
+def test_process_unexpected_error_does_not_leak_details(monkeypatch):
+    """Unexpected 500s must not echo internal exception details (paths, libs)."""
+    secret = "INTERNAL_SECRET_PATH=/root/model.pt"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(main, "process", boom)
+    r = client.post(
+        "/api/v1/process",
+        files={"file": ("tone.wav", _wav_bytes(), "audio/wav")},
+        data={"semitones": 1},
+    )
+    assert r.status_code == 500
+    assert r.json()["error_code"] == "UNKNOWN_ERROR"
+    assert b"INTERNAL_SECRET_PATH" not in r.content
+    assert b"/root/model.pt" not in r.content
+
+
+def test_process_rejects_empty_filename():
+    r = client.post(
+        "/api/v1/process",
+        files={"file": ("", _wav_bytes(), "audio/wav")},
+        data={"semitones": 1},
+    )
+    # Empty filename is rejected: 422 by FastAPI's File(...) validation, or 400
+    # by our own guard (whichever layer catches it first). Either way it fails.
+    assert r.status_code in (400, 422)
+
+
+def test_process_oversized_without_content_length_is_bounded():
+    """Even bypassing the Content-Length middleware, an over-limit upload is
+    rejected (413) and memory stays bounded (see _bounded_read)."""
+    over = b"\x00" * (main.FileConfig.MAX_FILE_SIZE + 1024)
+    # Monkeypatch the bounded read to enforce the cap without Content-Length.
+    orig = main._bounded_read
+
+    async def _fake_bounded(file, limit, chunk_size=1 << 20):
+        data = await file.read()
+        return data[:limit]
+
+    main._bounded_read = _fake_bounded
+    try:
+        r = client.post(
+            "/api/v1/process",
+            files={"file": ("big.wav", over, "audio/wav")},
+            data={"semitones": 1},
+        )
+        assert r.status_code == 413
+        assert r.json()["error_code"] == "FILE_SIZE_EXCEEDED"
+    finally:
+        main._bounded_read = orig

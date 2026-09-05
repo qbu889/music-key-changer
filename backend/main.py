@@ -6,6 +6,8 @@ after 24h.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 import shutil
@@ -22,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 
 from audio.config import FileConfig, Paths, ErrorCode, FRONTEND_DIR
 from audio.processor import AudioError, process, validate
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -75,6 +79,28 @@ def _resolve_session_file(session_id: str, file_id: str, kind: str) -> Path | No
     return target
 
 
+async def _bounded_read(file: UploadFile, limit: int, chunk_size: int = 1 << 20) -> bytes:
+    """Read at most ``limit`` bytes from an uploaded file.
+
+    ``UploadFile.read()`` loads the *entire* request body into RAM. An upload
+    with a missing or under-reported ``Content-Length`` (chunked / attack
+    uploads) can therefore OOM the server even with a ``Content-Length`` check
+    in place. This reads in bounded chunks from the underlying spooled file and
+    stops at ``limit``, capping memory regardless of what ``Content-Length``
+    claims.
+    """
+    raw = file.file  # SpooledTemporaryFile (binary); read off the event loop
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining > 0:
+        chunk = await asyncio.to_thread(raw.read, min(chunk_size, remaining))
+        if not chunk:
+            break  # EOF reached before the limit
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 # --- Session middleware: reads/creates the session id and sets the cookie --
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
@@ -113,7 +139,9 @@ MAX_UPLOAD_BYTES = FileConfig.MAX_FILE_SIZE + 5 * 1024 * 1024
 @app.middleware("http")
 async def limit_request_size(request: Request, call_next):
     content_length = request.headers.get("content-length")
-    if content_length and content_length.isdigit() and int(content_length) > MAX_UPLOAD_BYTES:
+    # ``isascii()`` guards against unicode "digit" chars (e.g. '²'): ``isdigit()``
+    # is True for them but ``int()`` raises ValueError, which would 500 the request.
+    if content_length and content_length.isascii() and content_length.isdigit() and int(content_length) > MAX_UPLOAD_BYTES:
         return JSONResponse(
             status_code=413,
             content={"status": "error", "error_code": ErrorCode.FILE_SIZE_EXCEEDED,
@@ -144,10 +172,29 @@ async def process_audio(request: Request, file: UploadFile = File(...), semitone
     session_id = request.state.session_id
     _sessions[session_id]["process_count"] += 1
 
-    # 1. read + validate synchronously (small enough for MVP)
-    data = await file.read()
+    # 0. sanitize the uploaded filename: basename only, reject empty names.
+    #    The filename is never written to disk (output uses a random file_id),
+    #    but normalizing it strips any path components as defense in depth.
+    safe_filename = Path(file.filename).name if file.filename else ""
+    if not safe_filename:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "error_code": ErrorCode.FILE_FORMAT_INVALID,
+                     "message": "缺少上传文件"},
+        )
+
+    # 1. read (bounded to cap memory) + validate. ``_bounded_read`` stops at
+    #    MAX_UPLOAD_BYTES even when Content-Length is missing/lies, closing the
+    #    upload-DoS gap that a Content-Length check alone leaves open.
+    data = await _bounded_read(file, MAX_UPLOAD_BYTES)
+    if len(data) > FileConfig.MAX_FILE_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"status": "error", "error_code": ErrorCode.FILE_SIZE_EXCEEDED,
+                     "message": f"文件过大，请选择小于 {FileConfig.MAX_FILE_SIZE / 1024 / 1024:.0f}MB 的文件"},
+        )
     try:
-        info = validate(file.filename, data)
+        info = validate(safe_filename, data)
     except AudioError as exc:
         return JSONResponse(status_code=400, content={"status": "error", "error_code": exc.code, "message": exc.message})
 
@@ -160,11 +207,16 @@ async def process_audio(request: Request, file: UploadFile = File(...), semitone
 
     # 2. process
     try:
-        result = process(file.filename, data, semitones)
+        result = process(safe_filename, data, semitones)
     except AudioError as exc:
         return JSONResponse(status_code=400, content={"status": "error", "error_code": exc.code, "message": exc.message})
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse(status_code=500, content={"status": "error", "error_code": ErrorCode.PROCESSING_FAILED, "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - unexpected error; log server-side, never leak internals
+        logger.error("processing failed for session %s: %r", session_id, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "error_code": ErrorCode.UNKNOWN_ERROR,
+                     "message": "处理失败，请稍后重试"},
+        )
 
     # 3. persist result into session-isolated dir
     file_id = uuid.uuid4().hex

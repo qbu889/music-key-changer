@@ -115,6 +115,15 @@ music-key-changer/
   - 提交：`b87c631`（尚未 push，本地领先 origin/master 7 个提交）。
   - ⚠️ **已知遗留（可后续处理）**：`limit_request_size` 仅校验 `Content-Length`（分片/无 Content-Length 上传防护弱）；`process` 通用异常仍 `str(exc)` 回传，可能泄露内部细节。限流需求文档已有 SlowAPI 计划（见 §6 非功能项）。
 
+### 5.5 今日工作（2026-09-05，安全加固续）
+- ✅ **剩余安全项修复**（基于首次审查的"已知遗留"与后续审计）：
+  - **🟠 上传 DoS 补漏**：原 `limit_request_size` 仅校验 `Content-Length`，分片/伪造/无 Content-Length 上传可绕过 → `await file.read()` 整包入内存 OOM。新增 `_bounded_read()` 从底层 spooled 文件**分块读取**（`asyncio.to_thread` 不阻塞事件循环），硬性封顶 `MAX_UPLOAD_BYTES`；`process_audio` 读取后复核 `len(data) > MAX_FILE_SIZE` → 413。两条防线互补。
+  - **🟠 内部信息泄露**：`process` 通用 `except Exception` 原 `str(exc)` 回传（暴露路径/库内部）。改为服务端 `logger.error` 记录、返回泛化 `"处理失败，请稍后重试"`（`UNKNOWN_ERROR`）。
+  - **🟡 Content-Length 解析健壮性**：`isdigit()` 对 unicode 数字（如 '²'）返回 True 但 `int()` 抛异常→500。加 `isascii()` 守卫。
+  - **🟡 文件名净化（纵深防御）**：`process_audio` 仅用 `Path(filename).name`（去路径成分）、拒绝空文件名；文件名本就不落盘（输出用随机 `file_id`）。
+- **验证**：新增 5 个测试（`_bounded_read` 封顶/读满、意外异常不泄露、空 filename、无 Content-Length 超限）。`pytest` **28 passed**（原 23 + 本轮 5）。
+- 提交：待提交。
+
 ---
 
 ## 6. 待开发项（按需求文档优先级，详见 `CLAUDE.md::Unfinished`）
