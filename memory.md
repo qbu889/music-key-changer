@@ -1,7 +1,7 @@
 # 项目记忆 · Music Key Changer（音乐升降调）
 
 > 本文件记录项目现状、技术要点与每日工作轨迹，便于后续快速接手。
-> 最后更新：2026-09-04
+> 最后更新：2026-09-05
 
 ---
 
@@ -33,7 +33,7 @@
 ```
 music-key-changer/
 ├── backend/
-│   ├── main.py              # FastAPI 入口/路由/会话中间件/静态托管/后台清理线程
+│   ├── main.py              # FastAPI 入口/路由/会话中间件（安全：上传大小限制/安全头/session 隔离下载）/静态托管/后台清理线程
 │   ├── audio/
 │   │   ├── config.py        # 格式/大小/时长限制、路径、错误码、FRONTEND_DIR、ProcessingConfig
 │   │   ├── processor.py     # 校验 + pitch_shift_separated(分离+Librosa)+ WAV 编码（与 FastAPI 解耦）
@@ -102,6 +102,18 @@ music-key-changer/
     - 播放进度统一改用可靠的单调墙钟 `performance.now()`，避免 `audioCtx.currentTime` 在部分浏览器/headless 环境下推进不可靠。
   - 验证：后端路径与本地相位声码器路径均用 20s 音频测得 seek 按 1.0x 线性（1s=50、3s=150、5s=250）；pause 保持、resume 从断点继续、跳段、下载均正常；`pytest` 13 passed。
   - 提交：`73a6f1f`（已 push 到 origin/master）。
+
+### 5.4 今日工作（2026-09-05）
+- ✅ **后端安全加固（首次系统安全审查）**。改动集中在 `backend/main.py`。
+  - **🔴 路径遍历 + IDOR（`/api/v1/download/{file_id}`）**：原 `file_id` 直接拼进文件系统路径，攻击者可用 `../../` 读服务器任意文件、或遍历其他会话文件。
+    - 新增 `_resolve_session_file()`：`file_id` 必须匹配 `^[a-f0-9]{32}$`（即 `uuid4.hex`），且用 `target.relative_to(base)` 确认文件**物理位于本会话目录**内；否则返回 `None` → 404。一处同时消除路径遍历与跨会话访问（IDOR），对攻击者统一返回 404 不泄露是否检测到攻击。
+  - **🟠 上传 DoS**：原 `await file.read()` 在**校验之前**把整包读入内存且无上限 → OOM。新增 `limit_request_size` 中间件，读取前按 `Content-Length` 拒绝（`MAX_UPLOAD_BYTES = 55MB` = 50MB 文件 + 5MB multipart 开销），超限返回 `413`。实测合法 50MB 文件仍 `200`。
+  - **🟡 内存泄漏**：`_sessions` 字典只增不减；`_cleanup_expired()` 清理过期会话时同步 `_sessions.pop()`。
+  - **🟢 Cookie secure**：按 `request.url.scheme` 动态置 `secure`（仅 HTTPS/WSS），本地 HTTP 不受影响。
+  - **🟢 安全响应头**：新增 `set_security_headers` 中间件，加 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
+  - **验证**：新增 4 个安全测试（路径遍历、跨会话访问、超限上传、安全头）。`pytest` **23 passed**（API 端到端 10 + 音频单测 13）。功能不受影响：正常上传/处理/下载/播放全部验证通过。
+  - 提交：`b87c631`（尚未 push，本地领先 origin/master 7 个提交）。
+  - ⚠️ **已知遗留（可后续处理）**：`limit_request_size` 仅校验 `Content-Length`（分片/无 Content-Length 上传防护弱）；`process` 通用异常仍 `str(exc)` 回传，可能泄露内部细节。限流需求文档已有 SlowAPI 计划（见 §6 非功能项）。
 
 ---
 
