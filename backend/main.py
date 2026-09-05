@@ -6,6 +6,8 @@ after 24h.
 """
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import threading
 import time
@@ -48,6 +50,31 @@ def _user_dir(session_id: str, kind: str) -> Path:
     return d
 
 
+# --- Security: session-isolated file access --------------------------------
+# A ``file_id`` is always a ``uuid.uuid4().hex`` string -> exactly 32 lowercase
+# hex chars. Anything else (``..``, ``/``, ``..%2f`` ...) is rejected outright.
+_FILE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+def _resolve_session_file(session_id: str, file_id: str, kind: str) -> Path | None:
+    """Resolve a file inside a session's ``kind`` directory.
+
+    Returns ``None`` (treated as "not found") when ``file_id`` is malformed or
+    would escape the session directory. This blocks both path traversal
+    (``../../etc/passwd``) and cross-session access (IDOR): a file is only
+    reachable if it physically lives inside ``<base>/<session_id>/<kind>/``.
+    """
+    if not _FILE_ID_RE.match(file_id):
+        return None
+    base = (Paths.BASE / session_id / kind).resolve()
+    target = (base / f"{file_id}.wav").resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return None
+    return target
+
+
 # --- Session middleware: reads/creates the session id and sets the cookie --
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
@@ -63,13 +90,45 @@ async def session_middleware(request: Request, call_next):
         }
     request.state.session_id = session_id
     response = await call_next(request)
+    # Mark the session as active for TTL accounting.
+    _sessions[session_id]["last_active"] = datetime.now(timezone.utc).timestamp()
     response.set_cookie(
         key="session_id",
         value=session_id,
         httponly=True,
         samesite="lax",
+        secure=request.url.scheme in ("https", "wss"),  # only over TLS
         max_age=Paths.TTL_SECONDS,
     )
+    return response
+
+
+# --- Security: cap upload size before it hits memory (DoS guard) -----------
+# ``MAX_FILE_SIZE`` is the file cap; we allow a little extra headroom for the
+# multipart envelope. Rejecting on ``Content-Length`` avoids reading a multi-GB
+# body into RAM via ``file.read()`` (which otherwise runs *before* validation).
+MAX_UPLOAD_BYTES = FileConfig.MAX_FILE_SIZE + 5 * 1024 * 1024
+
+
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_UPLOAD_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"status": "error", "error_code": ErrorCode.FILE_SIZE_EXCEEDED,
+                     "message": f"文件过大，请选择小于 {FileConfig.MAX_FILE_SIZE / 1024 / 1024:.0f}MB 的文件"},
+        )
+    return await call_next(request)
+
+
+# --- Security: harden response headers -------------------------------------
+@app.middleware("http")
+async def set_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
 
 
@@ -125,8 +184,9 @@ async def process_audio(request: Request, file: UploadFile = File(...), semitone
 @app.get("/api/v1/download/{file_id}")
 def download(file_id: str, request: Request):
     session_id = request.state.session_id
-    path = _user_dir(session_id, "processed") / f"{file_id}.wav"
-    if not path.exists():
+    # Reject path traversal / cross-session IDs before touching the filesystem.
+    path = _resolve_session_file(session_id, file_id, "processed")
+    if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在或已过期")
     return FileResponse(str(path), media_type="audio/wav", filename=f"{path.stem}.wav")
 
@@ -163,6 +223,7 @@ def _cleanup_expired() -> int:
         last = _sessions.get(session_id.name, {}).get("last_active", 0)
         if now - last > Paths.TTL_SECONDS:
             shutil.rmtree(session_id, ignore_errors=True)
+            _sessions.pop(session_id.name, None)  # also drop the in-memory record
             removed += 1
     return removed
 

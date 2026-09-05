@@ -73,6 +73,55 @@ def test_download_missing_file_is_404():
     assert r.status_code == 404
 
 
+# --- Security tests --------------------------------------------------------
+def test_download_rejects_path_traversal():
+    """A file_id with ``..`` must not escape the session directory or read
+    arbitrary files on disk."""
+    for hostile in ("../../../../etc/passwd", "..", "a" * 31, "a" * 33, "../x", "0x" + "1" * 30):
+        r = client.get(f"/api/v1/download/{hostile}")
+        assert r.status_code == 404, hostile
+        assert b"root:" not in r.content  # never leaked a system file
+
+
+def test_download_blocks_cross_session_access():
+    """A file produced for one session must not be downloadable by another
+    session (IDOR protection)."""
+    other = TestClient(main.app)  # separate cookie jar -> independent session
+    r = other.post(
+        "/api/v1/process",
+        files={"file": ("tone.wav", _wav_bytes(), "audio/wav")},
+        data={"semitones": 2},
+    )
+    assert r.status_code == 200, r.text
+    file_id = r.json()["file_id"]
+
+    # The owning session can still download it.
+    ok = other.get(f"/api/v1/download/{file_id}")
+    assert ok.status_code == 200
+
+    # A different session cannot (IDOR protection).
+    denied = client.get(f"/api/v1/download/{file_id}")
+    assert denied.status_code == 404
+
+
+def test_upload_over_limit_is_rejected():
+    """Oversized uploads are rejected (413) before being read into memory."""
+    big = b"\x00" * (main.MAX_UPLOAD_BYTES + 1024)
+    r = client.post(
+        "/api/v1/process",
+        files={"file": ("big.wav", big, "audio/wav")},
+        data={"semitones": 1},
+    )
+    assert r.status_code == 413
+    assert r.json()["error_code"] == "FILE_SIZE_EXCEEDED"
+
+
+def test_security_headers_present():
+    r = client.get("/api/health")
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert r.headers.get("X-Frame-Options") == "DENY"
+
+
 def test_frontend_served():
     r = client.get("/")
     assert r.status_code == 200
