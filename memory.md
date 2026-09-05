@@ -124,6 +124,17 @@ music-key-changer/
 - **验证**：新增 5 个测试（`_bounded_read` 封顶/读满、意外异常不泄露、空 filename、无 Content-Length 超限）。`pytest` **28 passed**（原 23 + 本轮 5）。
 - 提交：待提交。
 
+### 5.6 今日工作（2026-09-05，安全加固续 · CSP）
+- ✅ **内容安全策略（CSP）加固**。经审计确认前端无内联脚本/样式/事件处理器（之前 grep 到的 3 处 `on...=` 实为 `content=` 误判）：唯一脚本为同源外部 `./app.js`，样式来自 `./styles.css`，favicon 为 `data:` URI，API 调用均为同源。新增严格 CSP：
+  ```
+  default-src 'self' blob:; script-src 'self'; style-src 'self';
+  img-src 'self' data:; connect-src 'self'; base-uri 'self';
+  form-action 'self'; object-src 'none'; frame-ancestors 'none'
+  ```
+  `default-src` 允许 `blob:` 以兼容前端 `<a download>` 的 blob 下载链接；`script-src`/`style-src` 保持严格（无需 `'unsafe-inline'`）。另加 `Permissions-Policy` 关闭地理定位/麦克风/摄像头。
+- **验证**：用 Playwright 真实加载页面——外部 app.js 成功加载、标题正常、**0 控制台错误、0 被阻断请求**；`pytest` 29 passed（新增 CSP 断言）。
+- 提交：待提交。
+
 ---
 
 ## 6. 待开发项（按需求文档优先级，详见 `CLAUDE.md::Unfinished`）

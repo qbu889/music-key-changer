@@ -151,12 +151,31 @@ async def limit_request_size(request: Request, call_next):
 
 
 # --- Security: harden response headers -------------------------------------
+# A strict CSP is safe for this app: the only script is the external same-origin
+# ./app.js, styles come from ./styles.css, the favicon is a data: URI, and all
+# API calls are same-origin. ``blob:`` is permitted so the client-side download
+# link (frontend/app.js) works.
+CSP_VALUE = (
+    "default-src 'self' blob:; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'; "
+    "frame-ancestors 'none'"
+)
+
+
 @app.middleware("http")
 async def set_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = CSP_VALUE
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
 

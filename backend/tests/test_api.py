@@ -123,6 +123,17 @@ def test_security_headers_present():
     assert r.headers.get("X-Frame-Options") == "DENY"
 
 
+def test_content_security_policy_strict():
+    r = client.get("/api/health")
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "default-src 'self'" in csp
+    assert "script-src 'self'" in csp          # no inline scripts / external CDNs
+    assert "style-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "connect-src 'self'" in csp          # same-origin API only
+
+
 def test_frontend_served():
     r = client.get("/")
     assert r.status_code == 200
