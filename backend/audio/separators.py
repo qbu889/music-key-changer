@@ -24,7 +24,8 @@ import numpy as np
 if "HF_ENDPOINT" not in os.environ:
     os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-import torch  # noqa: E402
+# NOTE: torch is intentionally NOT imported here. It is imported lazily inside
+# SourceSeparator methods so the default (non-separation) pipeline stays light.
 
 # Demucs models are trained at this sample rate; we resample in/out around it.
 MODEL_SR = 44100
@@ -84,6 +85,7 @@ class SourceSeparator:
 
     @staticmethod
     def _pick_device() -> torch.device:
+        import torch
         if torch.cuda.is_available():
             return torch.device("cuda")
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -92,6 +94,7 @@ class SourceSeparator:
 
     def _to_tensor(self, audio: np.ndarray, orig_sr: int) -> torch.Tensor:
         import librosa
+        import torch
 
         if audio.ndim == 1:
             # Demucs models expect stereo input; upmix mono -> stereo.
@@ -106,6 +109,7 @@ class SourceSeparator:
     def _run_model(self, x: torch.Tensor) -> torch.Tensor:
         """Run the model via ``apply_model`` (handles both HDemucs and
         BagOfModels, with overlap-add refinement for cleaner separation)."""
+        import torch
         from demucs.apply import apply_model
 
         with torch.no_grad():
